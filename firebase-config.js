@@ -10,7 +10,8 @@ const firebaseConfig = {
     projectId: "happybirthday-dd880",
     storageBucket: "happybirthday-dd880.firebasestorage.app",
     messagingSenderId: "936206563051",
-    appId: "1:936206563051:web:d8681cd31f740cf1ad30ae"
+    appId: "1:936206563051:web:d8681cd31f740cf1ad30ae",
+    databaseURL: "https://happybirthday-dd880-default-rtdb.firebaseio.com"
   };
 
 const app = initializeApp(firebaseConfig);
