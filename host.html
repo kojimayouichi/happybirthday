@@ -338,39 +338,37 @@ function buildGameUI() {
   btnArea.innerHTML = '';
   const myParts = [...new Set(assignParts(gs.playerCount, gs.myIndex, gs.seed).map(n => n[3]))];
   const partInfo = {
-    melody:  { label:'MELODY',  icon:'🎵', cls:'big-btn-melody'  },
-    harmony: { label:'HARMONY', icon:'🎶', cls:'big-btn-harmony' },
-    bass:    { label:'BASS',    icon:'🎹', cls:'big-btn-bass'    },
+    melody:  { label:'MELODY',  icon:'🎵' },
+    harmony: { label:'HARMONY', icon:'🎶' },
+    bass:    { label:'BASS',    icon:'🎹' },
   };
-  const btn = document.createElement('button');
-  btn.id = 'main-btn';
-  btn.className = 'big-btn ' + (
-    myParts.includes('melody')  ? 'big-btn-melody' :
-    myParts.includes('harmony') ? 'big-btn-harmony' : 'big-btn-bass'
-  );
-  const icons  = myParts.map(p => partInfo[p].icon).join('');
-  const labels = myParts.map(p => partInfo[p].label).join(' + ');
-  btn.innerHTML = `<span class="btn-icon">${icons}</span><span class="btn-label">${labels}</span>`;
-  btn.addEventListener('pointerdown', e => { e.preventDefault(); onBtnDown(); });
-  btn.addEventListener('pointerup',   e => { e.preventDefault(); onBtnUp(); });
-  btn.addEventListener('pointerleave',e => { e.preventDefault(); onBtnUp(); });
-  btn.addEventListener('pointercancel',e=>{ e.preventDefault(); onBtnUp(); });
-  btnArea.appendChild(btn);
-  document.getElementById('part-label').textContent = labels;
+  // パートごとに独立したボタンを生成
+  myParts.forEach(part => {
+    const btn = document.createElement('button');
+    btn.id = `btn-${part}`;
+    btn.className = `big-btn big-btn-${part}`;
+    btn.innerHTML = `<span class="btn-icon">${partInfo[part].icon}</span><span class="btn-label">${partInfo[part].label}</span>`;
+    btn.addEventListener('pointerdown', e => { e.preventDefault(); onBtnDown(part); });
+    btn.addEventListener('pointerup',   e => { e.preventDefault(); onBtnUp(part); });
+    btn.addEventListener('pointerleave',e => { e.preventDefault(); onBtnUp(part); });
+    btn.addEventListener('pointercancel',e=>{ e.preventDefault(); onBtnUp(part); });
+    btnArea.appendChild(btn);
+  });
+  document.getElementById('part-label').textContent = myParts.map(p => partInfo[p].label).join(' + ');
 }
 
 // =====================================================
 // ボタン入力
 // =====================================================
-function onBtnDown() {
+function onBtnDown(part) {
   if (gs.screen !== 'game') return;
-  gs.btnHeld = true;
-  const btn = document.getElementById('main-btn');
+  const btn = document.getElementById(`btn-${part}`);
   if (btn) btn.classList.add('pressed');
   const now = getCurrentTime();
   let best = null, bestDiff = Infinity;
+  // そのパートのノーツだけ対象にする
   for (const n of gs.notes) {
-    if (n.judged) continue;
+    if (n.judged || n.part !== part) continue;
     const diff = Math.abs(now - n.startTime);
     if (diff < bestDiff && diff <= GOOD_WINDOW + 0.05) { bestDiff = diff; best = n; }
   }
@@ -387,12 +385,11 @@ function onBtnDown() {
     }
   }
 }
-function onBtnUp() {
-  gs.btnHeld = false;
-  const btn = document.getElementById('main-btn');
+function onBtnUp(part) {
+  const btn = document.getElementById(`btn-${part}`);
   if (btn) btn.classList.remove('pressed', 'holding');
   for (const n of gs.notes) {
-    if (n.holdActive && !n.holdReleased) {
+    if (n.part === part && n.holdActive && !n.holdReleased) {
       n.holdActive = false; n.holdReleased = true;
       stopNote(n.note);
     }
@@ -494,9 +491,11 @@ function renderFrame() {
     }
   }
 
-  // ボタングロー
-  const btn = document.getElementById('main-btn');
-  if (btn) btn.classList.toggle('holding', gs.notes.some(n => n.holdActive) && gs.btnHeld);
+  // ボタングロー（パートごとに独立）
+  for (const part of ['melody', 'harmony', 'bass']) {
+    const btn = document.getElementById(`btn-${part}`);
+    if (btn) btn.classList.toggle('holding', gs.notes.some(n => n.holdActive && n.part === part));
+  }
 
   // 進捗バー
   document.getElementById('progress-fill').style.width = (Math.min(1, now / gs.songDuration) * 100) + '%';
