@@ -49,6 +49,14 @@ const BASS_SCORE = [
 
 // パート割り当て（人数・index・seedから決定）
 function assignParts(playerCount, myIndex, seed) {
+  // テストモード（1人）: 全パートを担当
+  if (playerCount === 1) {
+    return [
+      ...MELODY_SCORE.map(n=>[...n,'melody']),
+      ...HARMONY_SCORE.map(n=>[...n,'harmony']),
+      ...BASS_SCORE.map(n=>[...n,'bass']),
+    ];
+  }
   if (playerCount === 2) {
     return myIndex === 0
       ? [...MELODY_SCORE.map(n=>[...n,'melody']), ...HARMONY_SCORE.map(n=>[...n,'harmony'])]
@@ -178,6 +186,20 @@ function detachListeners() {
 // =====================================================
 // セットアップ画面 → ルーム作成 → QR表示
 // =====================================================
+// =====================================================
+// テストモード（1人で即スタート）
+// =====================================================
+document.getElementById('btn-test').addEventListener('click', () => {
+  initAudio();
+  const name = document.getElementById('input-name').value.trim() || 'ホスト';
+  gs.myUid      = 'test';
+  gs.myIndex    = 0;
+  gs.playerCount = 1;
+  gs.seed       = Math.floor(Math.random() * 0xFFFFFF);
+  gs.roomId     = null;
+  startCountdownFrom(Date.now() + 2000, gs.seed);
+});
+
 document.getElementById('btn-create').addEventListener('click', async () => {
   initAudio();
   const name  = document.getElementById('input-name').value.trim() || 'ホスト';
@@ -208,6 +230,7 @@ document.getElementById('btn-create').addEventListener('click', async () => {
     colorDark: '#ffffff', colorLight: '#0a0a1a',
   });
   document.getElementById('join-url').textContent = joinUrl;
+  document.getElementById('btn-join-self').href = joinUrl;
 
   showScreen('waiting');
   listenRoom();
@@ -589,6 +612,13 @@ html, body {
   color:#1a0a00; box-shadow:0 4px 20px rgba(255,215,0,0.25); transition:transform 0.12s;
 }
 .btn-primary:active { transform:scale(0.97); }
+.btn-test {
+  padding:10px; border-radius:12px; border:1px solid rgba(255,255,255,0.2); cursor:pointer;
+  font-size:14px; font-weight:600;
+  background:rgba(255,255,255,0.05); color:rgba(255,255,255,0.6);
+  transition:transform 0.12s, background 0.12s; width:100%;
+}
+.btn-test:active { transform:scale(0.97); background:rgba(255,255,255,0.1); }
 
 /* ===== 待機 ===== */
 #screen-waiting {
@@ -626,6 +656,13 @@ html, body {
   box-shadow:none; cursor:default;
 }
 #btn-start:not(:disabled):active { transform:scale(0.97); }
+.btn-join-self {
+  display:inline-block; padding:10px 20px; border-radius:12px;
+  background:rgba(0,229,255,0.1); border:1px solid rgba(0,229,255,0.3);
+  color:var(--accent-cyan); font-size:14px; font-weight:600;
+  text-decoration:none; text-align:center; transition:background 0.12s;
+}
+.btn-join-self:active { background:rgba(0,229,255,0.2); }
 
 /* ===== ゲーム ===== */
 #screen-game {
@@ -722,6 +759,7 @@ html, body {
       <option value="4">4人で演奏</option>
     </select>
     <button class="btn-primary" id="btn-create">🎼 ルームを作成してQRを表示</button>
+    <button class="btn-test" id="btn-test">🧪 1人でテスト</button>
   </div>
 </div>
 
@@ -734,6 +772,7 @@ html, body {
     <div class="join-url" id="join-url"></div>
   </div>
   <div class="waiting-list" id="waiting-players"></div>
+  <a class="btn-join-self" id="btn-join-self" href="#" target="_blank">🎵 自分も参加する（新しいタブで開く）</a>
   <button id="btn-start" disabled>待機中…</button>
 </div>
 
