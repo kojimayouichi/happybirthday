@@ -1,0 +1,785 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>🎂 HBD Ensemble — ホスト</title>
+
+<!-- QRコード生成ライブラリ -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+
+<script type="module">
+import { db } from './firebase-config.js';
+import { ref, set, onValue, push, update }
+  from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js';
+
+// =====================================================
+// 定数
+// =====================================================
+const BPM = 90, BEAT_SEC = 60 / BPM, DUR_RATIO = 0.85;
+const PERFECT_WINDOW = 0.13, GOOD_WINDOW = 0.24;
+const SCROLL_SPEED = 280, LONG_THRESHOLD = 0.45;
+const COUNTDOWN_MS = 4000;
+
+// =====================================================
+// 楽譜データ
+// =====================================================
+const MELODY_SCORE = [
+  ['C5',0,0.75],['C5',0.75,0.25],['D5',1,1],['C5',2,1],['F5',3,1],['E5',4,2],
+  ['C5',6,0.75],['C5',6.75,0.25],['D5',7,1],['C5',8,1],['G5',9,1],['F5',10,2],
+  ['C5',12,0.75],['C5',12.75,0.25],['A5',13,1],['A5',14,1],['F5',15,1],
+  ['E5',16,0.5],['E5',16.5,0.5],['D5',17,2],
+  ['Bb5',19,0.75],['Bb5',19.75,0.25],['A5',20,1],['F5',21,1],['G5',22,1],['F5',23,2],
+];
+const HARMONY_SCORE = [
+  ['E5',0,0.75],['E5',0.75,0.25],['F5',1,1],['E5',2,1],['A5',3,1],['G5',4,2],
+  ['E5',6,0.75],['E5',6.75,0.25],['F5',7,1],['E5',8,1],['Bb5',9,1],['A5',10,2],
+  ['E5',12,0.75],['E5',12.75,0.25],['C5',13,1],['C5',14,1],['A5',15,1],
+  ['G5',16,0.5],['G5',16.5,0.5],['F5',17,2],
+  ['D5',19,0.75],['D5',19.75,0.25],['C5',20,1],['A5',21,1],['Bb5',22,1],['A5',23,2],
+];
+const BASS_SCORE = [
+  ['F3',0,1.5],['C3',1.5,1],['F3',2.5,1.5],
+  ['F3',4,1.5],['C3',6,1],['F3',7,1],
+  ['F3',8,1.5],['C3',10,1],['F3',11,1],
+  ['F3',12,1.5],['C3',14,1],['Bb3',15,1],['C3',16,1],
+  ['F3',17,2],
+  ['Bb3',19,1.5],['F3',21,1],['C3',22,1],['F3',23,2],
+];
+
+// パート割り当て（人数・index・seedから決定）
+function assignParts(playerCount, myIndex, seed) {
+  if (playerCount === 2) {
+    return myIndex === 0
+      ? [...MELODY_SCORE.map(n=>[...n,'melody']), ...HARMONY_SCORE.map(n=>[...n,'harmony'])]
+      : BASS_SCORE.map(n=>[...n,'bass']);
+  }
+  if (playerCount === 3) {
+    return [MELODY_SCORE, HARMONY_SCORE, BASS_SCORE][myIndex]
+      .map(n=>[...n, ['melody','harmony','bass'][myIndex]]);
+  }
+  // 4人: 全ノーツをseedでシャッフルして均等分配
+  const all = [
+    ...MELODY_SCORE.map(n=>[...n,'melody']),
+    ...HARMONY_SCORE.map(n=>[...n,'harmony']),
+    ...BASS_SCORE.map(n=>[...n,'bass']),
+  ];
+  let s = seed >>> 0;
+  function rand() {
+    s += 0x6D2B79F5;
+    let t = Math.imul(s ^ s>>>15, 1 | s);
+    t ^= t + Math.imul(t ^ t>>>7, 61 | t);
+    return ((t ^ t>>>14) >>> 0) / 4294967296;
+  }
+  for (let i = all.length-1; i > 0; i--) {
+    const j = Math.floor(rand() * (i+1));
+    [all[i], all[j]] = [all[j], all[i]];
+  }
+  const chunk = Math.ceil(all.length / 4);
+  return all.slice(myIndex * chunk, (myIndex+1) * chunk);
+}
+
+// =====================================================
+// 音程テーブル / カラー
+// =====================================================
+const NOTE_FREQ = {
+  'C3':130.81,'D3':146.83,'E3':164.81,'F3':174.61,'G3':196.00,'A3':220.00,'Bb3':233.08,
+  'C4':261.63,'D4':293.66,'E4':329.63,'F4':349.23,'G4':392.00,'A4':440.00,'Bb4':466.16,
+  'C5':523.25,'D5':587.33,'E5':659.26,'F5':698.46,'G5':783.99,'A5':880.00,'Bb5':932.33,
+};
+const PART_COLOR = {
+  melody:  { fill:'rgba(255,215,0,0.85)',   stroke:'rgba(255,215,0,1)'   },
+  harmony: { fill:'rgba(255,107,157,0.85)', stroke:'rgba(255,107,157,1)' },
+  bass:    { fill:'rgba(0,229,255,0.75)',   stroke:'rgba(0,229,255,1)'   },
+};
+const JUDGED_COLOR = {
+  perfect: { fill:'rgba(255,215,0,0.2)',   stroke:'rgba(255,215,0,0.35)'   },
+  good:    { fill:'rgba(105,240,174,0.2)', stroke:'rgba(105,240,174,0.35)' },
+  miss:    { fill:'rgba(255,82,82,0.15)',  stroke:'rgba(255,82,82,0.25)'   },
+};
+
+// =====================================================
+// オーディオ
+// =====================================================
+let audioCtx = null;
+const activeOsc = {};
+
+function initAudio() {
+  if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  if (audioCtx.state === 'suspended') audioCtx.resume();
+}
+function playNote(name) {
+  if (!audioCtx || !NOTE_FREQ[name]) return;
+  stopNote(name);
+  const f = NOTE_FREQ[name];
+  const o1 = audioCtx.createOscillator(), g1 = audioCtx.createGain();
+  const o2 = audioCtx.createOscillator(), g2 = audioCtx.createGain();
+  o1.type = 'sine';     o1.frequency.value = f; g1.gain.value = 0.35;
+  o2.type = 'triangle'; o2.frequency.value = f; g2.gain.value = 0.12;
+  o1.connect(g1); g1.connect(audioCtx.destination);
+  o2.connect(g2); g2.connect(audioCtx.destination);
+  o1.start(); o2.start();
+  activeOsc[name] = {o1,o2,g1,g2};
+}
+function stopNote(name) {
+  const e = activeOsc[name]; if (!e) return;
+  const t = audioCtx.currentTime;
+  e.g1.gain.exponentialRampToValueAtTime(0.001, t+0.08);
+  e.g2.gain.exponentialRampToValueAtTime(0.001, t+0.08);
+  setTimeout(()=>{ try{e.o1.stop();e.o2.stop();}catch(_){} }, 100);
+  delete activeOsc[name];
+}
+function stopAllNotes() { Object.keys(activeOsc).forEach(stopNote); }
+
+// =====================================================
+// ゲーム状態
+// =====================================================
+let gs = {
+  screen: 'setup',
+  roomId: null, myUid: null, myIndex: 0, playerCount: 2, seed: 0,
+  notes: [], startTime: 0, songDuration: 0,
+  combo: 0, maxCombo: 0, score: 0, perfect: 0, good: 0, miss: 0, totalNotes: 0,
+  animFrame: null, btnHeld: false, unsubscribes: [],
+};
+
+function uid() { return Math.random().toString(36).slice(2,9); }
+function buildNotes(sp) {
+  return sp.map((n,i) => ({
+    idx: i, note: n[0],
+    startTime: n[1]*BEAT_SEC,
+    duration:  n[2]*BEAT_SEC*DUR_RATIO,
+    part: n[3],
+    isLong: n[2]*BEAT_SEC*DUR_RATIO >= LONG_THRESHOLD,
+    judged: false, judgment: null, holdActive: false, holdReleased: false,
+  }));
+}
+function getCurrentTime() {
+  if (!audioCtx) return 0;
+  return audioCtx.currentTime - gs.startTime;
+}
+
+// =====================================================
+// 画面管理
+// =====================================================
+const SCREENS = ['setup','waiting','game','result'];
+function showScreen(name) {
+  SCREENS.forEach(s => {
+    const el = document.getElementById(`screen-${s}`);
+    if (el) el.style.display = s === name ? 'flex' : 'none';
+  });
+  gs.screen = name;
+}
+
+function detachListeners() {
+  gs.unsubscribes.forEach(fn => { try{ fn(); }catch(_){} });
+  gs.unsubscribes = [];
+}
+
+// =====================================================
+// セットアップ画面 → ルーム作成 → QR表示
+// =====================================================
+document.getElementById('btn-create').addEventListener('click', async () => {
+  initAudio();
+  const name  = document.getElementById('input-name').value.trim() || 'ホスト';
+  const count = parseInt(document.getElementById('select-count').value);
+
+  gs.myUid      = uid();
+  gs.myIndex    = 0;
+  gs.playerCount = count;
+  gs.seed       = Math.floor(Math.random() * 0xFFFFFF);
+
+  // Firebaseにルームを作成
+  const roomRef = push(ref(db, 'rooms'));
+  gs.roomId = roomRef.key;
+  await set(roomRef, {
+    host: gs.myUid,
+    playerCount: count,
+    status: 'waiting',
+    seed: gs.seed,
+    players: { [gs.myUid]: { name, index: 0, joinedAt: Date.now() } },
+  });
+
+  // 参加者向けのURLを生成してQRコードを表示
+  const joinUrl = new URL('index.html', window.location.href).href + '?room=' + gs.roomId;
+  document.getElementById('qrcode').innerHTML = '';
+  new QRCode(document.getElementById('qrcode'), {
+    text: joinUrl,
+    width: 200, height: 200,
+    colorDark: '#ffffff', colorLight: '#0a0a1a',
+  });
+  document.getElementById('join-url').textContent = joinUrl;
+
+  showScreen('waiting');
+  listenRoom();
+});
+
+// =====================================================
+// 待機画面
+// =====================================================
+function listenRoom() {
+  const roomRef = ref(db, `rooms/${gs.roomId}`);
+  const unsub = onValue(roomRef, snap => {
+    if (!snap.exists()) return;
+    const data = snap.val();
+    updateWaitingUI(data);
+    if (data.status === 'countdown') {
+      detachListeners();
+      startCountdownFrom(data.startAt, data.seed);
+    }
+  });
+  gs.unsubscribes.push(unsub);
+}
+
+function updateWaitingUI(data) {
+  const sorted = data.players
+    ? Object.entries(data.players).sort((a,b) => a[1].joinedAt - b[1].joinedAt)
+    : [];
+
+  // プレイヤーリスト更新
+  const list = document.getElementById('waiting-players');
+  list.innerHTML = '';
+  sorted.forEach(([id, p], i) => {
+    const li = document.createElement('div');
+    li.className = 'waiting-player' + (id === gs.myUid ? ' me' : '');
+    li.textContent = `P${i+1}  ${p.name}${id === gs.myUid ? ' 👑 ホスト' : ''}`;
+    list.appendChild(li);
+  });
+
+  // スタートボタンの状態
+  const ready = sorted.length === data.playerCount;
+  const startBtn = document.getElementById('btn-start');
+  startBtn.disabled = !ready;
+  startBtn.textContent = ready
+    ? '▶ START!'
+    : `待機中… ${sorted.length} / ${data.playerCount}人`;
+}
+
+document.getElementById('btn-start').addEventListener('click', async () => {
+  const startAt = Date.now() + COUNTDOWN_MS;
+  await update(ref(db, `rooms/${gs.roomId}`), { status: 'countdown', startAt, seed: gs.seed });
+});
+
+// =====================================================
+// カウントダウン → ゲーム開始
+// =====================================================
+async function startCountdownFrom(startAtMs, seed) {
+  gs.seed = seed;
+  showScreen('game');
+  buildGameUI();
+  resizeCanvas();
+
+  const scoreWithPart = assignParts(gs.playerCount, gs.myIndex, seed);
+  gs.notes = buildNotes(scoreWithPart);
+  gs.totalNotes = gs.notes.length;
+
+  const allBeats = [...MELODY_SCORE, ...HARMONY_SCORE, ...BASS_SCORE];
+  const last = allBeats.reduce((a,b) => (b[1]+b[2]) > (a[1]+a[2]) ? b : a);
+  gs.songDuration = (last[1] + last[2]) * BEAT_SEC + 1;
+
+  gs.combo = 0; gs.maxCombo = 0; gs.score = 0;
+  gs.perfect = 0; gs.good = 0; gs.miss = 0;
+  gs.btnHeld = false;
+  stopAllNotes();
+  updateHeader();
+
+  const overlay = document.getElementById('countdown-overlay');
+  overlay.style.display = 'flex';
+  const tick = () => {
+    const rem = startAtMs - Date.now();
+    if (rem > 0) {
+      overlay.textContent = Math.ceil(rem/1000) <= 3 ? Math.ceil(rem/1000) : '🎵';
+      setTimeout(tick, 100);
+    } else {
+      overlay.style.display = 'none';
+      beginPlay();
+    }
+  };
+  tick();
+}
+
+function beginPlay() {
+  initAudio();
+  const trackEl  = document.getElementById('track-canvas');
+  const fallTime = (trackEl ? trackEl.clientHeight : 400) / SCROLL_SPEED;
+  gs.notes.forEach(n => n.startTime += fallTime);
+  gs.songDuration += fallTime;
+  gs.startTime = audioCtx.currentTime;
+  gs.animFrame = requestAnimationFrame(renderFrame);
+}
+
+// =====================================================
+// ゲームUI構築
+// =====================================================
+function buildGameUI() {
+  const btnArea = document.getElementById('btn-area');
+  btnArea.innerHTML = '';
+  const myParts = [...new Set(assignParts(gs.playerCount, gs.myIndex, gs.seed).map(n => n[3]))];
+  const partInfo = {
+    melody:  { label:'MELODY',  icon:'🎵', cls:'big-btn-melody'  },
+    harmony: { label:'HARMONY', icon:'🎶', cls:'big-btn-harmony' },
+    bass:    { label:'BASS',    icon:'🎹', cls:'big-btn-bass'    },
+  };
+  const btn = document.createElement('button');
+  btn.id = 'main-btn';
+  btn.className = 'big-btn ' + (
+    myParts.includes('melody')  ? 'big-btn-melody' :
+    myParts.includes('harmony') ? 'big-btn-harmony' : 'big-btn-bass'
+  );
+  const icons  = myParts.map(p => partInfo[p].icon).join('');
+  const labels = myParts.map(p => partInfo[p].label).join(' + ');
+  btn.innerHTML = `<span class="btn-icon">${icons}</span><span class="btn-label">${labels}</span>`;
+  btn.addEventListener('pointerdown', e => { e.preventDefault(); onBtnDown(); });
+  btn.addEventListener('pointerup',   e => { e.preventDefault(); onBtnUp(); });
+  btn.addEventListener('pointerleave',e => { e.preventDefault(); onBtnUp(); });
+  btn.addEventListener('pointercancel',e=>{ e.preventDefault(); onBtnUp(); });
+  btnArea.appendChild(btn);
+  document.getElementById('part-label').textContent = labels;
+}
+
+// =====================================================
+// ボタン入力
+// =====================================================
+function onBtnDown() {
+  if (gs.screen !== 'game') return;
+  gs.btnHeld = true;
+  const btn = document.getElementById('main-btn');
+  if (btn) btn.classList.add('pressed');
+  const now = getCurrentTime();
+  let best = null, bestDiff = Infinity;
+  for (const n of gs.notes) {
+    if (n.judged) continue;
+    const diff = Math.abs(now - n.startTime);
+    if (diff < bestDiff && diff <= GOOD_WINDOW + 0.05) { bestDiff = diff; best = n; }
+  }
+  if (best) {
+    if (bestDiff <= PERFECT_WINDOW) judgeNote(best, 'perfect');
+    else judgeNote(best, 'good');
+    if (best.isLong) {
+      playNote(best.note);
+      best.holdActive = true;
+      btn && btn.classList.add('holding');
+    } else {
+      playNote(best.note);
+      setTimeout(() => stopNote(best.note), best.duration * 1000);
+    }
+  }
+}
+function onBtnUp() {
+  gs.btnHeld = false;
+  const btn = document.getElementById('main-btn');
+  if (btn) btn.classList.remove('pressed', 'holding');
+  for (const n of gs.notes) {
+    if (n.holdActive && !n.holdReleased) {
+      n.holdActive = false; n.holdReleased = true;
+      stopNote(n.note);
+    }
+  }
+}
+
+// =====================================================
+// 判定
+// =====================================================
+function judgeNote(note, judgment) {
+  note.judged = true; note.judgment = judgment;
+  if (judgment === 'perfect') {
+    gs.perfect++; gs.score += 1000 + gs.combo * 10; gs.combo++;
+    showJudgment('PERFECT ✨', 'var(--perfect-color)');
+  } else {
+    gs.good++; gs.score += 500 + gs.combo * 5; gs.combo++;
+    showJudgment('GOOD!', 'var(--good-color)');
+  }
+  if (gs.combo > gs.maxCombo) gs.maxCombo = gs.combo;
+  updateHeader();
+}
+function showJudgment(text, color) {
+  const el = document.getElementById('judgment-display');
+  el.textContent = text; el.style.color = color;
+  el.classList.remove('show'); void el.offsetWidth; el.classList.add('show');
+}
+function updateHeader() {
+  document.getElementById('combo-val').textContent = gs.combo;
+  document.getElementById('score-val').textContent = gs.score.toLocaleString();
+}
+
+// =====================================================
+// 描画
+// =====================================================
+function resizeCanvas() {
+  const canvas = document.getElementById('track-canvas');
+  if (!canvas) return;
+  const rect = canvas.parentElement.getBoundingClientRect();
+  canvas.width  = rect.width  * devicePixelRatio;
+  canvas.height = rect.height * devicePixelRatio;
+  canvas.style.width  = rect.width  + 'px';
+  canvas.style.height = rect.height + 'px';
+}
+
+function renderFrame() {
+  if (gs.screen !== 'game') return;
+  const canvas = document.getElementById('track-canvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height, dpr = devicePixelRatio;
+  const now = getCurrentTime();
+
+  ctx.clearRect(0,0,W,H);
+  ctx.fillStyle = 'rgba(255,255,255,0.02)'; ctx.fillRect(0,0,W,H);
+
+  // ヒットライン
+  const hitY = H - 2 * dpr;
+  ctx.strokeStyle = 'rgba(255,255,255,0.3)'; ctx.lineWidth = 2 * dpr;
+  ctx.beginPath(); ctx.moveTo(0, hitY); ctx.lineTo(W, hitY); ctx.stroke();
+
+  // ノーツ描画
+  const noteX = 6 * dpr, noteW = W - 12 * dpr;
+  for (const n of gs.notes) {
+    const bottomY = hitY - (n.startTime - now) * SCROLL_SPEED * dpr;
+    const topY    = hitY - (n.startTime + n.duration - now) * SCROLL_SPEED * dpr;
+    if (topY > H + 50*dpr || bottomY < -50*dpr) continue;
+    const noteH = bottomY - topY;
+    const r = Math.min(10*dpr, Math.max(noteH/2, 3*dpr));
+    const colors = n.judged
+      ? (JUDGED_COLOR[n.judgment] || JUDGED_COLOR.miss)
+      : (PART_COLOR[n.part] || PART_COLOR.melody);
+    ctx.save();
+    ctx.fillStyle = colors.fill; ctx.strokeStyle = colors.stroke; ctx.lineWidth = 2 * dpr;
+    if (n.isLong && !n.judged) {
+      ctx.beginPath();
+      ctx.moveTo(noteX, bottomY);
+      ctx.lineTo(noteX, topY + r);
+      ctx.quadraticCurveTo(noteX, topY, noteX + r, topY);
+      ctx.lineTo(noteX + noteW - r, topY);
+      ctx.quadraticCurveTo(noteX + noteW, topY, noteX + noteW, topY + r);
+      ctx.lineTo(noteX + noteW, bottomY);
+      ctx.closePath();
+      ctx.fill(); ctx.stroke();
+      if (n.holdActive) { ctx.shadowColor = colors.stroke; ctx.shadowBlur = 18*dpr; ctx.fill(); }
+    } else {
+      const dH = Math.max(noteH, 8*dpr);
+      ctx.beginPath(); ctx.roundRect(noteX, bottomY - dH, noteW, dH, r);
+      ctx.fill(); ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  // オートミス判定
+  for (const n of gs.notes) {
+    if (!n.judged && now > n.startTime + GOOD_WINDOW + 0.05) {
+      n.judged = true; n.judgment = 'miss';
+      gs.miss++; gs.combo = 0; updateHeader();
+      showJudgment('MISS', 'var(--miss-color)');
+    }
+  }
+
+  // ボタングロー
+  const btn = document.getElementById('main-btn');
+  if (btn) btn.classList.toggle('holding', gs.notes.some(n => n.holdActive) && gs.btnHeld);
+
+  // 進捗バー
+  document.getElementById('progress-fill').style.width = (Math.min(1, now / gs.songDuration) * 100) + '%';
+
+  if (now > gs.songDuration + 1.5) { endGame(); return; }
+  gs.animFrame = requestAnimationFrame(renderFrame);
+}
+
+// =====================================================
+// ゲーム終了
+// =====================================================
+function endGame() {
+  if (gs.animFrame) { cancelAnimationFrame(gs.animFrame); gs.animFrame = null; }
+  stopAllNotes();
+  // 参加者が再リスンできるようにFirebaseをwaitingに戻す
+  if (gs.roomId) update(ref(db, `rooms/${gs.roomId}`), { status: 'waiting' }).catch(() => {});
+
+  const total = gs.totalNotes;
+  const acc   = total > 0 ? Math.round(((gs.perfect*100 + gs.good*50) / (total*100)) * 100) : 0;
+  const rank  = acc >= 95 ? 'S' : acc >= 85 ? 'A' : acc >= 70 ? 'B' : acc >= 50 ? 'C' : 'D';
+  document.getElementById('result-rank').textContent = rank;
+  document.getElementById('result-rank').className = 'result-rank ' + rank;
+  document.getElementById('result-score').textContent = gs.score.toLocaleString();
+  document.getElementById('result-perfect').textContent = gs.perfect;
+  document.getElementById('result-good').textContent = gs.good;
+  document.getElementById('result-miss').textContent = gs.miss;
+  document.getElementById('result-maxcombo').textContent = gs.maxCombo;
+  document.getElementById('result-accuracy').textContent = `Accuracy: ${acc}%`;
+  showScreen('result');
+}
+
+// =====================================================
+// リザルトボタン
+// =====================================================
+// もう一度: 待機画面に戻りSTARTボタンで再スタート
+document.getElementById('btn-retry').addEventListener('click', async () => {
+  await update(ref(db, `rooms/${gs.roomId}`), { status: 'waiting' });
+  listenRoom();
+  showScreen('waiting');
+});
+// 終了: セットアップ画面へ
+document.getElementById('btn-home').addEventListener('click', () => {
+  if (gs.animFrame) cancelAnimationFrame(gs.animFrame);
+  stopAllNotes();
+  detachListeners();
+  showScreen('setup');
+});
+
+// =====================================================
+// リサイズ
+// =====================================================
+window.addEventListener('resize', () => { if (gs.screen === 'game') resizeCanvas(); });
+document.addEventListener('touchmove', e => e.preventDefault(), { passive: false });
+
+showScreen('setup');
+</script>
+
+<style>
+:root {
+  --bg-dark:      #0a0a1a;
+  --bg-panel:     #12122a;
+  --accent-gold:  #ffd700;
+  --accent-pink:  #ff6b9d;
+  --accent-cyan:  #00e5ff;
+  --accent-green: #69f0ae;
+  --perfect-color:#ffd700;
+  --good-color:   #69f0ae;
+  --miss-color:   #ff5252;
+}
+* { margin:0; padding:0; box-sizing:border-box; }
+html, body {
+  width:100%; height:100%; overflow:hidden;
+  background:var(--bg-dark); color:#eee;
+  font-family:'Segoe UI','Hiragino Sans',sans-serif;
+  touch-action:manipulation; user-select:none; -webkit-user-select:none;
+}
+
+/* ===== 共通 ===== */
+.screen {
+  display:none; flex-direction:column; align-items:center; justify-content:center;
+  height:100%; padding:20px; gap:16px;
+}
+
+/* ===== セットアップ ===== */
+#screen-setup {
+  background:radial-gradient(ellipse at 50% 30%, #1a1a3a 0%, var(--bg-dark) 70%);
+}
+.top-emoji { font-size:clamp(48px,12vw,64px); animation:bounce 2s ease-in-out infinite; }
+@keyframes bounce { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-10px)} }
+.top-title {
+  font-size:clamp(22px,5vw,36px); font-weight:800;
+  background:linear-gradient(135deg,var(--accent-gold),var(--accent-pink));
+  -webkit-background-clip:text; -webkit-text-fill-color:transparent;
+  text-align:center; line-height:1.3;
+}
+.setup-form {
+  display:flex; flex-direction:column; gap:12px;
+  width:min(100%,320px);
+}
+.input-field {
+  padding:12px 16px; border-radius:12px; border:1px solid rgba(255,255,255,0.15);
+  background:rgba(255,255,255,0.07); color:#fff; font-size:16px; outline:none; width:100%;
+}
+.input-field::placeholder { color:rgba(255,255,255,0.3); }
+.select-field {
+  padding:12px 16px; border-radius:12px; border:1px solid rgba(255,255,255,0.15);
+  background:rgba(255,255,255,0.07); color:#fff; font-size:16px; outline:none; width:100%;
+}
+.btn-primary {
+  padding:14px; border-radius:14px; border:none; cursor:pointer;
+  font-size:17px; font-weight:700;
+  background:linear-gradient(135deg,var(--accent-gold),#ffaa00);
+  color:#1a0a00; box-shadow:0 4px 20px rgba(255,215,0,0.25); transition:transform 0.12s;
+}
+.btn-primary:active { transform:scale(0.97); }
+
+/* ===== 待機 ===== */
+#screen-waiting {
+  background:radial-gradient(ellipse at 50% 20%, #1a1a3a 0%, var(--bg-dark) 70%);
+  overflow-y:auto; justify-content:flex-start; padding-top:24px;
+}
+.waiting-title { font-size:18px; font-weight:700; color:var(--accent-gold); }
+.qr-wrap {
+  background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.1);
+  border-radius:16px; padding:16px; display:flex; flex-direction:column; align-items:center; gap:10px;
+  width:min(100%,320px);
+}
+.qr-label { font-size:12px; color:rgba(255,255,255,0.45); text-align:center; }
+.join-url {
+  font-size:10px; color:var(--accent-cyan); word-break:break-all;
+  text-align:center; max-width:240px; opacity:0.7;
+}
+.waiting-list {
+  display:flex; flex-direction:column; gap:8px; width:min(100%,320px);
+}
+.waiting-player {
+  padding:10px 14px; border-radius:10px;
+  background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.1);
+  font-size:14px; font-weight:600;
+}
+.waiting-player.me { border-color:var(--accent-gold); background:rgba(255,215,0,0.08); color:var(--accent-gold); }
+#btn-start {
+  padding:16px 48px; border-radius:14px; border:none; cursor:pointer;
+  font-size:18px; font-weight:700;
+  background:linear-gradient(135deg,var(--accent-green),#00aa66);
+  color:#001a0d; box-shadow:0 4px 20px rgba(105,240,174,0.25); transition:transform 0.12s;
+}
+#btn-start:disabled {
+  background:rgba(255,255,255,0.1); color:rgba(255,255,255,0.3);
+  box-shadow:none; cursor:default;
+}
+#btn-start:not(:disabled):active { transform:scale(0.97); }
+
+/* ===== ゲーム ===== */
+#screen-game {
+  display:none; flex-direction:column; align-items:stretch;
+  height:100%; padding:0; gap:0; justify-content:flex-start;
+}
+.game-header {
+  display:flex; align-items:center; justify-content:space-between;
+  padding:8px 14px; background:var(--bg-panel);
+  border-bottom:1px solid rgba(255,255,255,0.06); flex-shrink:0;
+}
+.header-title {
+  font-size:13px; font-weight:700;
+  background:linear-gradient(90deg,var(--accent-gold),var(--accent-pink));
+  -webkit-background-clip:text; -webkit-text-fill-color:transparent;
+}
+.header-part  { font-size:11px; color:var(--accent-cyan); font-weight:700; }
+.header-stat  { text-align:center; }
+.header-stat-label { font-size:9px; color:rgba(255,255,255,0.4); text-transform:uppercase; letter-spacing:1px; }
+.header-stat-value { font-size:16px; font-weight:800; color:var(--accent-gold); }
+.progress-bar-wrap { height:4px; background:rgba(255,255,255,0.06); flex-shrink:0; }
+.progress-bar-fill { height:100%; width:0%; background:linear-gradient(90deg,var(--accent-cyan),var(--accent-pink)); transition:width 0.3s linear; }
+.track-area { flex:1; position:relative; overflow:hidden; min-height:0; background:rgba(255,255,255,0.02); }
+.track-canvas { width:100%; height:100%; display:block; }
+.judgment-display {
+  position:absolute; left:50%; bottom:20%; transform:translateX(-50%);
+  font-size:26px; font-weight:900; pointer-events:none; opacity:0;
+  text-shadow:0 0 20px currentColor; z-index:5;
+}
+.judgment-display.show { animation:judgePop 0.4s ease-out forwards; }
+@keyframes judgePop {
+  0%  { transform:translateX(-50%) scale(1.4); opacity:1; }
+  100%{ transform:translateX(-50%) scale(1) translateY(-20px); opacity:0; }
+}
+#btn-area { display:flex; padding:0 8px 10px; gap:8px; flex-shrink:0; }
+.big-btn {
+  flex:1; border:none; border-radius:0 0 14px 14px; cursor:pointer;
+  display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px;
+  font-weight:800; touch-action:manipulation; min-height:78px;
+  border-top:3px solid rgba(255,255,255,0.25); transition:filter 0.05s;
+}
+.big-btn .btn-icon  { font-size:22px; }
+.big-btn .btn-label { font-size:11px; opacity:0.7; }
+.big-btn.pressed  { filter:brightness(1.6); border-top-color:rgba(255,255,255,0.7); }
+.big-btn.holding  { animation:btnGlow 0.45s ease-in-out infinite alternate; }
+@keyframes btnGlow { 0%{filter:brightness(1.5)} 100%{filter:brightness(2.0)} }
+.big-btn-melody  { background:linear-gradient(180deg,#c8960a,#8a6400); color:#fff8d0; box-shadow:0 4px 0 rgba(0,0,0,0.4); }
+.big-btn-harmony { background:linear-gradient(180deg,#c0166e,#7a0040); color:#ffd0e8; box-shadow:0 4px 0 rgba(0,0,0,0.4); }
+.big-btn-bass    { background:linear-gradient(180deg,#0090aa,#005566); color:#d0f8ff; box-shadow:0 4px 0 rgba(0,0,0,0.4); }
+
+/* ===== カウントダウン ===== */
+#countdown-overlay {
+  display:none; position:fixed; inset:0; background:rgba(0,0,0,0.82);
+  z-index:100; align-items:center; justify-content:center;
+  font-size:88px; font-weight:900; color:var(--accent-gold);
+  text-shadow:0 0 40px rgba(255,215,0,0.6);
+}
+
+/* ===== リザルト ===== */
+#screen-result { background:radial-gradient(ellipse at 50% 40%,#1a1a3a 0%,var(--bg-dark) 70%); gap:14px; }
+.result-rank { font-size:72px; font-weight:900; line-height:1; }
+.result-rank.S { color:var(--accent-gold); text-shadow:0 0 40px rgba(255,215,0,0.5); }
+.result-rank.A { color:var(--accent-green); }
+.result-rank.B { color:var(--accent-cyan); }
+.result-rank.C { color:#aaa; }
+.result-rank.D { color:var(--miss-color); }
+.result-score { font-size:34px; font-weight:800; color:var(--accent-gold); }
+.result-stats { display:flex; gap:18px; flex-wrap:wrap; justify-content:center; }
+.result-stat { text-align:center; }
+.result-stat-value { font-size:22px; font-weight:800; }
+.result-stat-label { font-size:11px; color:rgba(255,255,255,0.4); text-transform:uppercase; letter-spacing:1px; }
+.result-stat-value.perfect { color:var(--perfect-color); }
+.result-stat-value.good    { color:var(--good-color); }
+.result-stat-value.miss    { color:var(--miss-color); }
+.result-accuracy { font-size:16px; color:rgba(255,255,255,0.55); }
+.result-buttons { display:flex; gap:10px; margin-top:8px; }
+.btn-result { padding:13px 28px; font-size:15px; font-weight:700; border:none; border-radius:12px; cursor:pointer; transition:transform 0.12s; }
+.btn-result:active { transform:scale(0.96); }
+.btn-retry { background:linear-gradient(135deg,var(--accent-pink),#ff4081); color:#fff; }
+.btn-home  { background:rgba(255,255,255,0.09); color:#eee; border:1px solid rgba(255,255,255,0.15); }
+</style>
+</head>
+<body>
+
+<!-- セットアップ画面 -->
+<div id="screen-setup" class="screen">
+  <div class="top-emoji">🎂</div>
+  <div class="top-title">Happy Birthday<br>Ensemble</div>
+  <div class="setup-form">
+    <input class="input-field" id="input-name" type="text" placeholder="ホストの名前" maxlength="12">
+    <select class="select-field" id="select-count">
+      <option value="2">2人で演奏</option>
+      <option value="3">3人で演奏</option>
+      <option value="4">4人で演奏</option>
+    </select>
+    <button class="btn-primary" id="btn-create">🎼 ルームを作成してQRを表示</button>
+  </div>
+</div>
+
+<!-- 待機画面（QR表示） -->
+<div id="screen-waiting" class="screen">
+  <div class="waiting-title">📱 QRコードを参加者に見せてね</div>
+  <div class="qr-wrap">
+    <div id="qrcode"></div>
+    <div class="qr-label">スマホのカメラで読み取って参加 📷</div>
+    <div class="join-url" id="join-url"></div>
+  </div>
+  <div class="waiting-list" id="waiting-players"></div>
+  <button id="btn-start" disabled>待機中…</button>
+</div>
+
+<!-- ゲーム画面 -->
+<div id="screen-game">
+  <div class="game-header">
+    <div>
+      <div class="header-title">🎂 HBD Ensemble</div>
+      <div class="header-part" id="part-label"></div>
+    </div>
+    <div class="header-stat">
+      <div class="header-stat-label">Combo</div>
+      <div class="header-stat-value" id="combo-val">0</div>
+    </div>
+    <div class="header-stat">
+      <div class="header-stat-label">Score</div>
+      <div class="header-stat-value" id="score-val">0</div>
+    </div>
+  </div>
+  <div class="progress-bar-wrap"><div class="progress-bar-fill" id="progress-fill"></div></div>
+  <div class="track-area">
+    <canvas class="track-canvas" id="track-canvas"></canvas>
+    <div class="judgment-display" id="judgment-display"></div>
+  </div>
+  <div id="btn-area"></div>
+</div>
+
+<!-- カウントダウンオーバーレイ -->
+<div id="countdown-overlay"></div>
+
+<!-- リザルト画面 -->
+<div id="screen-result" class="screen">
+  <div class="result-rank" id="result-rank">S</div>
+  <div class="result-score" id="result-score">0</div>
+  <div class="result-stats">
+    <div class="result-stat"><div class="result-stat-value perfect" id="result-perfect">0</div><div class="result-stat-label">Perfect</div></div>
+    <div class="result-stat"><div class="result-stat-value good"    id="result-good">0</div><div class="result-stat-label">Good</div></div>
+    <div class="result-stat"><div class="result-stat-value miss"    id="result-miss">0</div><div class="result-stat-label">Miss</div></div>
+    <div class="result-stat"><div class="result-stat-value" id="result-maxcombo" style="color:var(--accent-cyan)">0</div><div class="result-stat-label">Max Combo</div></div>
+  </div>
+  <div class="result-accuracy" id="result-accuracy">Accuracy: 100%</div>
+  <div class="result-buttons">
+    <button class="btn-result btn-home"  id="btn-home">🏠 終了</button>
+    <button class="btn-result btn-retry" id="btn-retry">🔄 もう一度</button>
+  </div>
+</div>
+
+</body>
+</html>
