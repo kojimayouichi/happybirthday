@@ -442,17 +442,50 @@ function renderFrame() {
   const W = canvas.width, H = canvas.height, dpr = devicePixelRatio;
   const now = getCurrentTime();
 
+  // 担当パートをノーツから確定（固定順）
+  const PART_ORDER = ['melody', 'harmony', 'bass'];
+  const myParts = PART_ORDER.filter(p => gs.notes.some(n => n.part === p));
+  const laneCount = myParts.length;
+  const laneW = W / laneCount;
+
   ctx.clearRect(0,0,W,H);
-  ctx.fillStyle = 'rgba(255,255,255,0.02)'; ctx.fillRect(0,0,W,H);
+
+  // レーン背景・区切り線・ラベル
+  const PART_NAMES = { melody:'MELODY', harmony:'HARMONY', bass:'BASS' };
+  myParts.forEach((part, i) => {
+    const lx = i * laneW;
+    // 交互に薄い背景
+    ctx.fillStyle = i % 2 === 0 ? 'rgba(255,255,255,0.018)' : 'rgba(0,0,0,0)';
+    ctx.fillRect(lx, 0, laneW, H);
+    // 区切り線
+    if (i > 0) {
+      ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+      ctx.lineWidth = 1 * dpr;
+      ctx.beginPath(); ctx.moveTo(lx, 0); ctx.lineTo(lx, H); ctx.stroke();
+    }
+    // パートラベル（上部）
+    ctx.save();
+    ctx.font = `bold ${10*dpr}px sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.fillStyle = PART_COLOR[part].stroke;
+    ctx.globalAlpha = 0.5;
+    ctx.fillText(PART_NAMES[part], lx + laneW / 2, 14 * dpr);
+    ctx.restore();
+  });
 
   // ヒットライン
   const hitY = H - 2 * dpr;
   ctx.strokeStyle = 'rgba(255,255,255,0.3)'; ctx.lineWidth = 2 * dpr;
   ctx.beginPath(); ctx.moveTo(0, hitY); ctx.lineTo(W, hitY); ctx.stroke();
 
-  // ノーツ描画
-  const noteX = 6 * dpr, noteW = W - 12 * dpr;
+  // ノーツ描画（パートのレーンに配置）
   for (const n of gs.notes) {
+    const laneIndex = myParts.indexOf(n.part);
+    if (laneIndex === -1) continue;
+    const lx = laneIndex * laneW;
+    const noteX = lx + 6 * dpr;
+    const noteW = laneW - 12 * dpr;
+
     const bottomY = hitY - (n.startTime - now) * SCROLL_SPEED * dpr;
     const topY    = hitY - (n.startTime + n.duration - now) * SCROLL_SPEED * dpr;
     if (topY > H + 50*dpr || bottomY < -50*dpr) continue;
