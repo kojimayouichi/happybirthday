@@ -20,6 +20,8 @@ const BPM = 90, BEAT_SEC = 60 / BPM, DUR_RATIO = 0.85;
 const PERFECT_WINDOW = 0.13, GOOD_WINDOW = 0.24;
 const SCROLL_SPEED = 280, LONG_THRESHOLD = 0.45;
 const COUNTDOWN_MS = 4000;
+// 全端末で同じ値を使うことで、画面サイズに関わらずタイミングを同期する
+const FALL_TIME = 2.0; // ノーツが画面上端からヒットラインに到達するまでの固定秒数
 
 // =====================================================
 // 楽譜データ
@@ -314,19 +316,20 @@ async function startCountdownFrom(startAtMs, seed) {
       setTimeout(tick, 100);
     } else {
       overlay.style.display = 'none';
-      beginPlay();
+      beginPlay(startAtMs);
     }
   };
   tick();
 }
 
-function beginPlay() {
+function beginPlay(startAtMs) {
   initAudio();
-  const trackEl  = document.getElementById('track-canvas');
-  const fallTime = (trackEl ? trackEl.clientHeight : 400) / SCROLL_SPEED;
-  gs.notes.forEach(n => n.startTime += fallTime);
-  gs.songDuration += fallTime;
-  gs.startTime = audioCtx.currentTime;
+  // 固定のFALL_TIMEを使うことで、全端末のノーツ押し時刻を統一する
+  gs.notes.forEach(n => n.startTime += FALL_TIME);
+  gs.songDuration += FALL_TIME;
+  // startAtMsからの経過時間を補正して、端末間のタイミングを同期する
+  const elapsed = Math.max(0, (Date.now() - startAtMs) / 1000);
+  gs.startTime = audioCtx.currentTime - elapsed;
   gs.animFrame = requestAnimationFrame(renderFrame);
 }
 
