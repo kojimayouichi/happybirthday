@@ -164,6 +164,16 @@ let gs = {
 };
 
 function uid() { return Math.random().toString(36).slice(2,9); }
+function filterSimultaneousBass(notes) {
+  return notes.filter(n => {
+    if (n.part !== 'bass') return true;
+    const simultaneous = notes.filter(o =>
+      o !== n && Math.abs(o.startTime - n.startTime) <= GOOD_WINDOW + 0.05
+    );
+    return simultaneous.length < 2;
+  });
+}
+
 function buildNotes(sp) {
   return sp.map((n,i) => ({
     idx: i, note: n[0],
@@ -283,7 +293,7 @@ async function startCountdownFrom(startAtMs, seed) {
   resizeCanvas();
 
   const scoreWithPart = assignParts(gs.playerCount, gs.myIndex, seed);
-  gs.notes = buildNotes(scoreWithPart);
+  gs.notes = filterSimultaneousBass(buildNotes(scoreWithPart));
   gs.totalNotes = gs.notes.length;
 
   const allBeats = [...MELODY_SCORE, ...HARMONY_SCORE, ...BASS_SCORE];
@@ -360,11 +370,16 @@ function onBtnDown(part) {
   if (btn) btn.classList.add('pressed');
   const now = getCurrentTime();
   let best = null, bestDiff = Infinity;
-  // そのパートのノーツだけ対象にする
+  let lateLong = null;
   for (const n of gs.notes) {
     if (n.judged || n.part !== part) continue;
-    const diff = Math.abs(now - n.startTime);
-    if (diff < bestDiff && diff <= GOOD_WINDOW + 0.05) { bestDiff = diff; best = n; }
+    const diff = now - n.startTime;
+    const absDiff = Math.abs(diff);
+    if (absDiff <= GOOD_WINDOW + 0.05 && absDiff < bestDiff) {
+      bestDiff = absDiff; best = n;
+    } else if (n.isLong && diff > GOOD_WINDOW + 0.05 && diff < n.duration) {
+      if (lateLong === null || diff < now - lateLong.startTime) lateLong = n;
+    }
   }
   if (best) {
     if (bestDiff <= PERFECT_WINDOW) judgeNote(best, 'perfect');
@@ -377,6 +392,12 @@ function onBtnDown(part) {
       playNote(best.note, best.part);
       setTimeout(() => stopNote(best.note), best.duration * 1000);
     }
+  } else if (lateLong) {
+    // 途中押し: スコアなし・判定表示なし、音だけ鳴らす
+    lateLong.judged = true; lateLong.judgment = 'late';
+    playNote(lateLong.note, lateLong.part);
+    lateLong.holdActive = true;
+    btn && btn.classList.add('holding');
   }
 }
 function onBtnUp(part) {
@@ -506,9 +527,10 @@ function renderFrame() {
     ctx.restore();
   }
 
-  // オートミス判定
+  // オートミス判定（ロングノーツはduration終端まで猶予）
   for (const n of gs.notes) {
-    if (!n.judged && now > n.startTime + GOOD_WINDOW + 0.05) {
+    const missThreshold = n.isLong ? n.startTime + n.duration : n.startTime + GOOD_WINDOW + 0.05;
+    if (!n.judged && now > missThreshold) {
       n.judged = true; n.judgment = 'miss';
       gs.miss++; gs.combo = 0; updateHeader();
       showJudgment('MISS', 'var(--miss-color)');
