@@ -118,25 +118,52 @@ function initAudio() {
   if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   if (audioCtx.state === 'suspended') audioCtx.resume();
 }
-function playNote(name) {
+function playNote(name, part) {
   if (!audioCtx || !NOTE_FREQ[name]) return;
   stopNote(name);
   const f = NOTE_FREQ[name];
-  const o1 = audioCtx.createOscillator(), g1 = audioCtx.createGain();
-  const o2 = audioCtx.createOscillator(), g2 = audioCtx.createGain();
-  o1.type = 'sine';     o1.frequency.value = f; g1.gain.value = 0.35;
-  o2.type = 'triangle'; o2.frequency.value = f; g2.gain.value = 0.12;
-  o1.connect(g1); g1.connect(audioCtx.destination);
-  o2.connect(g2); g2.connect(audioCtx.destination);
-  o1.start(); o2.start();
-  activeOsc[name] = {o1,o2,g1,g2};
+  const t = audioCtx.currentTime;
+
+  if (part === 'bass') {
+    // ベース: サブオクターブ + ノコギリ波 + アタックエンベロープで迫力を出す
+    const o1 = audioCtx.createOscillator(), g1 = audioCtx.createGain(); // メイン
+    const o2 = audioCtx.createOscillator(), g2 = audioCtx.createGain(); // ノコギリ波（倍音）
+    const o3 = audioCtx.createOscillator(), g3 = audioCtx.createGain(); // サブオクターブ
+    o1.type = 'sine';     o1.frequency.value = f;
+    o2.type = 'sawtooth'; o2.frequency.value = f;
+    o3.type = 'sine';     o3.frequency.value = f / 2; // 1オクターブ下
+    // ドン！と鳴るアタックエンベロープ
+    g1.gain.setValueAtTime(0, t); g1.gain.linearRampToValueAtTime(0.45, t + 0.02);
+    g2.gain.setValueAtTime(0, t); g2.gain.linearRampToValueAtTime(0.08, t + 0.02);
+    g3.gain.setValueAtTime(0, t); g3.gain.linearRampToValueAtTime(0.28, t + 0.04);
+    o1.connect(g1); g1.connect(audioCtx.destination);
+    o2.connect(g2); g2.connect(audioCtx.destination);
+    o3.connect(g3); g3.connect(audioCtx.destination);
+    o1.start(); o2.start(); o3.start();
+    activeOsc[name] = {o1,o2,o3,g1,g2,g3};
+  } else {
+    // メロディ: 大きめ / ハモリ: 控えめ
+    const vol = part === 'harmony' ? 0.22 : 0.40;
+    const o1 = audioCtx.createOscillator(), g1 = audioCtx.createGain();
+    const o2 = audioCtx.createOscillator(), g2 = audioCtx.createGain();
+    o1.type = 'sine';     o1.frequency.value = f; g1.gain.value = vol;
+    o2.type = 'triangle'; o2.frequency.value = f; g2.gain.value = vol * 0.3;
+    o1.connect(g1); g1.connect(audioCtx.destination);
+    o2.connect(g2); g2.connect(audioCtx.destination);
+    o1.start(); o2.start();
+    activeOsc[name] = {o1,o2,g1,g2};
+  }
 }
 function stopNote(name) {
   const e = activeOsc[name]; if (!e) return;
   const t = audioCtx.currentTime;
   e.g1.gain.exponentialRampToValueAtTime(0.001, t+0.08);
   e.g2.gain.exponentialRampToValueAtTime(0.001, t+0.08);
-  setTimeout(()=>{ try{e.o1.stop();e.o2.stop();}catch(_){} }, 100);
+  if (e.g3) e.g3.gain.exponentialRampToValueAtTime(0.001, t+0.08);
+  setTimeout(()=>{
+    try{e.o1.stop();e.o2.stop();}catch(_){}
+    try{if(e.o3)e.o3.stop();}catch(_){}
+  }, 100);
   delete activeOsc[name];
 }
 function stopAllNotes() { Object.keys(activeOsc).forEach(stopNote); }
@@ -387,11 +414,11 @@ function onBtnDown(part) {
     if (bestDiff <= PERFECT_WINDOW) judgeNote(best, 'perfect');
     else judgeNote(best, 'good');
     if (best.isLong) {
-      playNote(best.note);
+      playNote(best.note, best.part);
       best.holdActive = true;
       btn && btn.classList.add('holding');
     } else {
-      playNote(best.note);
+      playNote(best.note, best.part);
       setTimeout(() => stopNote(best.note), best.duration * 1000);
     }
   }
