@@ -150,6 +150,7 @@ let gs = {
   notes: [], startTime: 0, songDuration: 0,
   combo: 0, maxCombo: 0, score: 0, perfect: 0, good: 0, miss: 0, totalNotes: 0,
   animFrame: null, btnHeld: false, unsubscribes: [],
+  serverTimeOffset: 0, // サーバー時刻と端末時刻のズレ(ms)
 };
 
 function uid() { return Math.random().toString(36).slice(2,9); }
@@ -167,6 +168,14 @@ function getCurrentTime() {
   if (!audioCtx) return 0;
   return audioCtx.currentTime - gs.startTime;
 }
+
+// サーバー時刻基準のDate.now()（端末間のクロックズレを補正）
+function serverNow() { return Date.now() + gs.serverTimeOffset; }
+
+// Firebaseからサーバー時刻オフセットを取得してgsに保存
+onValue(ref(db, '.info/serverTimeOffset'), snap => {
+  gs.serverTimeOffset = snap.val() || 0;
+}, { onlyOnce: true });
 
 // =====================================================
 // 画面管理
@@ -280,7 +289,7 @@ function updateWaitingUI(data) {
 }
 
 document.getElementById('btn-start').addEventListener('click', async () => {
-  const startAt = Date.now() + COUNTDOWN_MS;
+  const startAt = serverNow() + COUNTDOWN_MS; // サーバー時刻基準で設定
   await update(ref(db, `rooms/${gs.roomId}`), { status: 'countdown', startAt, seed: gs.seed });
 });
 
@@ -310,7 +319,7 @@ async function startCountdownFrom(startAtMs, seed) {
   const overlay = document.getElementById('countdown-overlay');
   overlay.style.display = 'flex';
   const tick = () => {
-    const rem = startAtMs - Date.now();
+    const rem = startAtMs - serverNow(); // サーバー時刻基準で残り時間を計算
     if (rem > 0) {
       overlay.textContent = Math.ceil(rem/1000) <= 3 ? Math.ceil(rem/1000) : '🎵';
       setTimeout(tick, 100);
@@ -324,11 +333,10 @@ async function startCountdownFrom(startAtMs, seed) {
 
 function beginPlay(startAtMs) {
   initAudio();
-  // 固定のFALL_TIMEを使うことで、全端末のノーツ押し時刻を統一する
   gs.notes.forEach(n => n.startTime += FALL_TIME);
   gs.songDuration += FALL_TIME;
-  // startAtMsからの経過時間を補正して、端末間のタイミングを同期する
-  const elapsed = Math.max(0, (Date.now() - startAtMs) / 1000);
+  // サーバー時刻基準の経過時間で補正することで全端末のタイミングを統一する
+  const elapsed = Math.max(0, (serverNow() - startAtMs) / 1000);
   gs.startTime = audioCtx.currentTime - elapsed;
   gs.animFrame = requestAnimationFrame(renderFrame);
 }
