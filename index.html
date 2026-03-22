@@ -46,20 +46,12 @@ const BASS_SCORE = [
 ];
 
 function assignParts(playerCount, myIndex, seed) {
-  if (playerCount === 2) {
-    return myIndex === 0
-      ? [...MELODY_SCORE.map(n=>[...n,'melody']), ...HARMONY_SCORE.map(n=>[...n,'harmony'])]
-      : BASS_SCORE.map(n=>[...n,'bass']);
-  }
-  if (playerCount === 3) {
-    return [MELODY_SCORE, HARMONY_SCORE, BASS_SCORE][myIndex]
-      .map(n=>[...n, ['melody','harmony','bass'][myIndex]]);
-  }
   const all = [
     ...MELODY_SCORE.map(n=>[...n,'melody']),
     ...HARMONY_SCORE.map(n=>[...n,'harmony']),
     ...BASS_SCORE.map(n=>[...n,'bass']),
   ];
+  // seedでシャッフルして均等分配
   let s = seed >>> 0;
   function rand() {
     s += 0x6D2B79F5;
@@ -71,7 +63,7 @@ function assignParts(playerCount, myIndex, seed) {
     const j = Math.floor(rand() * (i+1));
     [all[i], all[j]] = [all[j], all[i]];
   }
-  const chunk = Math.ceil(all.length / 4);
+  const chunk = Math.ceil(all.length / playerCount);
   return all.slice(myIndex * chunk, (myIndex+1) * chunk);
 }
 
