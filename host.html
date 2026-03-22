@@ -10,7 +10,7 @@
 
 <script type="module">
 import { db } from './firebase-config.js';
-import { ref, set, onValue, push, update }
+import { ref, set, onValue, update }
   from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-database.js';
 
 // =====================================================
@@ -181,6 +181,14 @@ let gs = {
 };
 
 function uid() { return Math.random().toString(36).slice(2,9); }
+
+// 読み取りやすい5文字のルームコードを生成（紛らわしい文字を除外）
+function generateRoomCode() {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // I,O,0,1 を除外
+  let code = '';
+  for (let i = 0; i < 5; i++) code += chars[Math.floor(Math.random() * chars.length)];
+  return code;
+}
 function buildNotes(sp) {
   return sp.map((n,i) => ({
     idx: i, note: n[0],
@@ -248,9 +256,9 @@ document.getElementById('btn-create').addEventListener('click', async () => {
   gs.playerCount = count;
   gs.seed       = Math.floor(Math.random() * 0xFFFFFF);
 
-  // Firebaseにルームを作成
-  const roomRef = push(ref(db, 'rooms'));
-  gs.roomId = roomRef.key;
+  // 短いルームコードでFirebaseにルームを作成
+  gs.roomId = generateRoomCode();
+  const roomRef = ref(db, `rooms/${gs.roomId}`);
   await set(roomRef, {
     host: gs.myUid,
     playerCount: count,
@@ -264,8 +272,9 @@ document.getElementById('btn-create').addEventListener('click', async () => {
   document.getElementById('qrcode').innerHTML = '';
   new QRCode(document.getElementById('qrcode'), {
     text: joinUrl,
-    width: 200, height: 200,
+    width: 240, height: 240,
     colorDark: '#ffffff', colorLight: '#0a0a1a',
+    correctLevel: QRCode.CorrectLevel.L, // エラー訂正を最小にしてQRを単純化
   });
   document.getElementById('join-url').textContent = joinUrl;
   document.getElementById('btn-join-self').href = joinUrl;
