@@ -228,12 +228,11 @@ if (!roomId) {
 document.getElementById('btn-join').addEventListener('click', async () => {
   if (!roomId) return;
   initAudio();
-  const name = document.getElementById('input-name').value.trim() || 'Player';
   gs.myUid = uid();
 
   // Firebaseにプレイヤーとして追加
   await set(ref(db, `rooms/${roomId}/players/${gs.myUid}`), {
-    name, index: -1, joinedAt: Date.now(),
+    index: -1, joinedAt: Date.now(),
   });
 
   showScreen('waiting');
@@ -276,7 +275,7 @@ function updateWaitingUI(data) {
   sorted.forEach(([id, p], i) => {
     const li = document.createElement('div');
     li.className = 'waiting-player' + (id === gs.myUid ? ' me' : '');
-    li.textContent = `P${i+1}  ${p.name}${id === gs.myUid ? ' (あなた)' : ''}`;
+    li.textContent = `Player${i+1}${id === gs.myUid ? ' (あなた)' : ''}`;
     list.appendChild(li);
   });
   document.getElementById('waiting-status').textContent =
@@ -769,10 +768,9 @@ html, body {
 <div id="screen-join" class="screen">
   <div class="join-emoji">🎵</div>
   <div class="join-title">Happy Birthday<br>Ensemble</div>
-  <div class="join-subtitle">QRコードから参加したね！<br>名前を入れてスタート 🎂</div>
+  <div class="join-subtitle">QRコードから参加したね！🎂</div>
   <div id="join-error">URLにルームIDがありません。<br>ホストのQRコードから参加してください。</div>
   <div id="join-form">
-    <input class="input-field" id="input-name" type="text" placeholder="あなたの名前" maxlength="12">
     <button class="btn-primary" id="btn-join">🎵 参加する</button>
   </div>
 </div>
