@@ -181,7 +181,7 @@ function buildNotes(sp) {
     duration:  n[2]*BEAT_SEC*DUR_RATIO,
     part: n[3],
     isLong: n[2]*BEAT_SEC*DUR_RATIO >= LONG_THRESHOLD,
-    judged: false, judgment: null, holdActive: false, holdReleased: false,
+    judged: false, judgment: null, holdActive: false, holdReleased: false, holdBonus: false,
   }));
 }
 
@@ -332,11 +332,11 @@ document.getElementById('btn-start').addEventListener('click', async () => {
 async function startCountdownFrom(startAtMs, seed) {
   gs.seed = seed;
   showScreen('game');
-  buildGameUI();
-  resizeCanvas();
 
   const scoreWithPart = assignParts(gs.playerCount, gs.myIndex, seed);
   gs.notes = filterSimultaneousBass(buildNotes(scoreWithPart));
+  buildGameUI();
+  resizeCanvas();
   gs.totalNotes = gs.notes.length;
 
   const allBeats = [...MELODY_SCORE, ...HARMONY_SCORE, ...BASS_SCORE];
@@ -382,8 +382,7 @@ function buildGameUI() {
   btnArea.innerHTML = '';
   // renderFrameと同じ固定順で並べることでボタンとレーンの位置を一致させる
   const PART_ORDER = ['melody', 'harmony', 'bass'];
-  const assigned = assignParts(gs.playerCount, gs.myIndex, gs.seed);
-  const myParts = PART_ORDER.filter(p => assigned.some(n => n[3] === p));
+  const myParts = PART_ORDER.filter(p => gs.notes.some(n => n.part === p));
   const partInfo = {
     melody:  { label:'MELODY',  icon:'🎵' },
     harmony: { label:'HARMONY', icon:'🎶' },
@@ -582,6 +581,23 @@ function renderFrame() {
       n.judged = true; n.judgment = 'miss';
       gs.miss++; gs.combo = 0; updateHeader();
       showJudgment('MISS', 'var(--miss-color)');
+    }
+  }
+
+  // ホールドボーナス判定（ロングノーツを最後まで押し続けたら追加スコア）
+  for (const n of gs.notes) {
+    if (n.isLong && n.judged && n.holdActive && !n.holdBonus && now >= n.startTime + n.duration) {
+      n.holdBonus = true;
+      n.holdActive = false;
+      stopNote(n.note);
+      const bonus = n.judgment === 'perfect' ? 500 : n.judgment === 'good' ? 300 : 0;
+      if (bonus > 0) {
+        gs.score += bonus;
+        showJudgment('HOLD! ⭐', 'var(--accent-cyan)');
+        updateHeader();
+      }
+      const hBtn = document.getElementById(`btn-${n.part}`);
+      if (hBtn) hBtn.classList.remove('holding');
     }
   }
 
